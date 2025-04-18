@@ -4,6 +4,9 @@ import os
 import pypdf
 import docx
 import requests # Dodajemy import requests
+# Dodajemy RecursiveCharacterTextSplitter i NLTK
+import nltk
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_experimental.text_splitter import SemanticChunker
 # Importujemy interfejs Embeddings, aby stworzyć własną klasę
 # Upewniamy się, że potrzebne importy są obecne
@@ -104,20 +107,106 @@ def read_file_content(file_path):
     except Exception as e:
         return None, f"Błąd podczas odczytu pliku: {e}"
 
-def split_text_semantically(text, method="percentile", threshold=None, base_url="http://localhost:1234/v1", model_name="nomic-embed-text"):
-    """Dzieli tekst semantycznie używając LangChain z własną klasą LMStudioEmbeddings."""
-    # api_key nie jest już potrzebny
+# Zmieniamy nazwę funkcji i dodajemy parametr 'strategy'
+def split_text(text, strategy="Semantyczny", semantic_method="percentile", threshold=None, base_url="http://localhost:1234/v1", model_name="nomic-embed-text"):
+    """Dzieli tekst na fragmenty używając wybranej strategii."""
     if not text:
-        return [], None # Zwraca pustą listę, jeśli tekst jest pusty
+        return [], None
 
     try:
-        # Użyj naszej niestandardowej klasy Embeddings
-        # Przekazujemy model_name i base_url (klasa sama doda /embeddings)
-        embeddings = LMStudioEmbeddings(model_name=model_name, base_url=base_url)
+        if strategy == "Semantyczny":
+            # Logika dla podziału semantycznego (przeniesiona tutaj)
+            embeddings = LMStudioEmbeddings(model_name=model_name, base_url=base_url)
+            threshold_kwargs = {}
+            if threshold is not None:
+                threshold_kwargs['breakpoint_threshold_amount'] = threshold
+            elif semantic_method == "percentile":
+                 threshold_kwargs.setdefault('breakpoint_threshold_amount', 95.0)
+            elif semantic_method == "standard_deviation":
+                 threshold_kwargs.setdefault('breakpoint_threshold_amount', 3.0)
+            elif semantic_method == "interquartile":
+                 threshold_kwargs.setdefault('breakpoint_threshold_amount', 1.5)
+            elif semantic_method == "gradient":
+                 threshold_kwargs.setdefault('breakpoint_threshold_amount', 95.0)
 
-        # Usunięto krok diagnostyczny, bo teraz mamy własną implementację
+            text_splitter = SemanticChunker(
+                embeddings,
+                breakpoint_threshold_type=semantic_method,
+                **threshold_kwargs
+            )
+            docs = text_splitter.create_documents([text])
+            return [doc.page_content for doc in docs], None
 
-        # Ustawienie progu na podstawie typu metody, jeśli nie podano konkretnego
+        elif strategy == "Na akapity":
+            # Logika dla podziału na akapity
+            # Domyślne separatory RecursiveCharacterTextSplitter zaczynają od "\n\n"
+            # Ustawiamy chunk_size na dużą wartość, aby upewnić się, że dzieli głównie po separatorach
+            # chunk_overlap=0, aby nie było nakładania
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=2000, # Rozsądnie duży rozmiar, aby nie dzielić wewnątrz akapitów
+                chunk_overlap=0,
+                length_function=len,
+                is_separator_regex=False,
+                separators=["\n\n", "\n", " ", ""] # Domyślne, dobre dla akapitów
+            )
+            chunks = text_splitter.split_text(text)
+            # Usuńmy puste fragmenty, które mogą powstać przez wielokrotne puste linie
+            chunks = [chunk for chunk in chunks if chunk.strip()]
+            return chunks, None
+
+        elif strategy == "Na zdania":
+            # Logika dla podziału na zdania przy użyciu NLTK
+            # Logika dla podziału na zdania przy użyciu NLTK
+            sentences = None # Inicjalizujemy jako None
+            try:
+                # Pierwsza próba tokenizacji
+                print("Próba tokenizacji NLTK...")
+                sentences = nltk.sent_tokenize(text)
+                print("Pierwsza próba tokenizacji NLTK powiodła się.")
+            except LookupError:
+                # Brak danych 'punkt', próba pobrania
+                print("Nie znaleziono danych NLTK 'punkt'. Próba pobrania...")
+                try:
+                    nltk.download('punkt', quiet=False)
+                    print("Pobieranie 'punkt' zakończone lub pakiet jest aktualny. Ponowna próba tokenizacji...")
+                    # Druga próba tokenizacji po pobraniu/sprawdzeniu
+                    sentences = nltk.sent_tokenize(text)
+                    print("Druga próba tokenizacji NLTK powiodła się.")
+                except Exception as download_or_retry_e:
+                    # Błąd podczas pobierania LUB podczas drugiej próby tokenizacji
+                    print(f"Błąd podczas pobierania NLTK 'punkt' lub ponownej tokenizacji: {download_or_retry_e}")
+                    manual_instructions = "Spróbuj ręcznie pobrać dane 'punkt' uruchamiając interpreter Python i wpisując:\nimport nltk\nnltk.download('punkt')"
+                    return None, f"Nie udało się użyć tokenizatora NLTK. {manual_instructions}"
+            except Exception as initial_nltk_e:
+                 # Inne błędy NLTK podczas pierwszej próby
+                 return None, f"Błąd podczas pierwszej próby tokenizacji NLTK: {initial_nltk_e}."
+
+            # Jeśli po wszystkich próbach 'sentences' jest None (co nie powinno się zdarzyć przy tej logice)
+            if sentences is None:
+                 return None, "Nie udało się uzyskać zdań za pomocą NLTK (niespodziewany błąd)."
+
+            # Przetwarzanie pomyślnie uzyskanych zdań
+            try:
+                # Usuń puste zdania
+                processed_sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+                print(f"Pomyślnie przetworzono {len(processed_sentences)} zdań.")
+                return processed_sentences, None
+            except Exception as process_e:
+                 return None, f"Błąd podczas przetwarzania zdań po tokenizacji NLTK: {process_e}"
+
+        else:
+            return None, f"Nieznana strategia podziału: {strategy}"
+
+    except ImportError as e:
+         # Błąd importu może dotyczyć różnych bibliotek w zależności od strategii
+         missing_lib = str(e).split("'")[-2] # Próba wyciągnięcia nazwy biblioteki
+         return None, f"Brak wymaganej biblioteki: '{missing_lib}'. Sprawdź instalację."
+    except Exception as e:
+        # Ogólny błąd
+        return None, f"Błąd podczas dzielenia tekstu (Strategia: {strategy}): {e}"
+
+
+# --- Klasa aplikacji GUI ---
         threshold_kwargs = {}
         if threshold is not None:
             threshold_kwargs['breakpoint_threshold_amount'] = threshold
@@ -153,7 +242,9 @@ class SemanticSplitterApp:
 
         # Zmienne
         self.file_path = tk.StringVar()
-        self.split_method = tk.StringVar(value="percentile") # Wartość domyślna
+        # Nowa zmienna dla strategii podziału
+        self.split_strategy = tk.StringVar(value="Semantyczny")
+        self.semantic_method = tk.StringVar(value="percentile") # Zmieniona nazwa zmiennej dla metody semantycznej
 
         # --- Górna ramka (Wybór pliku) ---
         top_frame = tk.Frame(root, padx=10, pady=10)
@@ -163,17 +254,35 @@ class SemanticSplitterApp:
         tk.Button(top_frame, text="Wybierz plik (.txt, .pdf, .docx)", command=self.select_file).pack(side=tk.LEFT, padx=5)
         tk.Label(top_frame, textvariable=self.file_path, relief=tk.SUNKEN, width=60).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5) # Zwiększono szerokość
 
-        # --- Środkowa ramka (Opcje podziału) ---
-        options_frame = tk.Frame(root, padx=10, pady=5)
-        options_frame.pack(fill=tk.X)
+        # --- Ramka Strategii Podziału ---
+        strategy_frame = tk.Frame(root, padx=10, pady=5)
+        strategy_frame.pack(fill=tk.X)
 
-        tk.Label(options_frame, text="Metoda podziału:").pack(side=tk.LEFT, padx=5)
-        methods = ["percentile", "standard_deviation", "interquartile", "gradient"]
-        method_menu = ttk.Combobox(options_frame, textvariable=self.split_method, values=methods, state="readonly", width=20)
-        method_menu.pack(side=tk.LEFT, padx=5)
+        tk.Label(strategy_frame, text="Strategia podziału:").pack(side=tk.LEFT, padx=5)
+        strategies = ["Semantyczny", "Na akapity", "Na zdania"]
+        # Usuwamy 'command' i dodajemy powiązanie zdarzenia poniżej
+        strategy_menu = ttk.Combobox(strategy_frame, textvariable=self.split_strategy, values=strategies, state="readonly", width=15)
+        strategy_menu.pack(side=tk.LEFT, padx=5)
+        # Powiązanie zdarzenia <<ComboboxSelected>> z funkcją aktualizującą
+        strategy_menu.bind("<<ComboboxSelected>>", self.update_semantic_options_state)
 
+        # --- Ramka Metody Semantycznej (warunkowo aktywna) ---
+        self.semantic_options_frame = tk.Frame(root, padx=10, pady=5)
+        self.semantic_options_frame.pack(fill=tk.X)
+
+        self.semantic_method_label = tk.Label(self.semantic_options_frame, text="Metoda semantyczna:")
+        self.semantic_method_label.pack(side=tk.LEFT, padx=5)
+        semantic_methods = ["percentile", "standard_deviation", "interquartile", "gradient"]
+        # Zmieniamy textvariable na self.semantic_method
+        self.semantic_method_menu = ttk.Combobox(self.semantic_options_frame, textvariable=self.semantic_method, values=semantic_methods, state="readonly", width=20)
+        self.semantic_method_menu.pack(side=tk.LEFT, padx=5)
+
+        # --- Ramka Przycisku ---
+        button_frame = tk.Frame(root, padx=10, pady=10)
+        button_frame.pack(fill=tk.X)
         # Przycisk uruchomienia
-        tk.Button(options_frame, text="Podziel tekst", command=self.run_split).pack(side=tk.LEFT, padx=20)
+        tk.Button(button_frame, text="Podziel tekst", command=self.run_split).pack(side=tk.LEFT, padx=5)
+        # Usunięto zduplikowany i błędny przycisk odnoszący się do 'options_frame'
 
         # --- Dolna ramka (Wyniki) ---
         result_frame = tk.Frame(root, padx=10, pady=10)
@@ -183,6 +292,15 @@ class SemanticSplitterApp:
         self.result_text = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, width=80, height=25)
         self.result_text.pack(fill=tk.BOTH, expand=True)
         self.result_text.config(state=tk.DISABLED) # Tylko do odczytu na początku
+
+    def update_semantic_options_state(self, event=None):
+        """Włącza/wyłącza opcje metody semantycznej w zależności od wybranej strategii."""
+        if self.split_strategy.get() == "Semantyczny":
+            self.semantic_method_label.config(state=tk.NORMAL)
+            self.semantic_method_menu.config(state="readonly")
+        else:
+            self.semantic_method_label.config(state=tk.DISABLED)
+            self.semantic_method_menu.config(state=tk.DISABLED)
 
     def select_file(self):
         """Otwiera okno dialogowe do wyboru pliku."""
@@ -206,8 +324,8 @@ class SemanticSplitterApp:
             messagebox.showerror("Błąd", "Nie wybrano pliku.")
             return
 
-        method = self.split_method.get()
-        # Klucz API nie jest już potrzebny dla LM Studio
+        strategy = self.split_strategy.get() # Pobierz wybraną strategię
+        semantic_method = self.semantic_method.get() # Pobierz metodę semantyczną (jeśli potrzebna)
 
         # Wyczyść poprzednie wyniki
         self.result_text.config(state=tk.NORMAL)
@@ -233,28 +351,58 @@ class SemanticSplitterApp:
         # Możesz zmienić base_url jeśli Twój LM Studio działa na innym adresie/porcie
         # Podajemy też model_name - domyślnie "nomic-embed-text"
         # Wywołujemy funkcję z poprawnymi parametrami dla naszej nowej implementacji
-        chunks, error = split_text_semantically(
+        # Wywołaj nową funkcję dzielenia tekstu
+        chunks, error = split_text(
             content,
-            method=method,
-            base_url="http://localhost:1234/v1", # Upewnij się, że to poprawny adres serwera LM Studio (bez /embeddings)
-            model_name="nomic-embed-text" # Upewnij się, że to poprawna nazwa dla API embeddings (jeśli jest wymagana)
+            strategy=strategy,
+            semantic_method=semantic_method, # Przekaż metodę semantyczną
+            base_url="http://localhost:1234/v1",
+            model_name="nomic-embed-text"
         )
         if error:
-            # Poprawiony komunikat błędu
-            messagebox.showerror("Błąd dzielenia tekstu", f"{error}\n\nSprawdź, czy serwer LM Studio działa pod adresem http://localhost:1234, czy załadowany model ('{model_name}') obsługuje osadzenia i czy endpoint /v1/embeddings jest aktywny. Sprawdź też logi serwera LM Studio.")
+            # Poprawiony komunikat błędu, dodajemy informację o strategii
+            messagebox.showerror(f"Błąd dzielenia tekstu (Strategia: {strategy})", f"{error}\n\nSprawdź ustawienia i logi serwera LM Studio (jeśli używasz strategii semantycznej).")
             self.result_text.delete(1.0, tk.END)
             self.result_text.config(state=tk.DISABLED)
             return
 
-        # Wyświetl wyniki
+        # Wyświetl wyniki i zapisz do plików
         self.result_text.delete(1.0, tk.END) # Wyczyść "Przetwarzanie..."
+
+        output_dir = "" # Zmienna do przechowywania ścieżki folderu wyjściowego
         if chunks:
-            for i, chunk in enumerate(chunks):
-                self.result_text.insert(tk.END, f"--- Fragment {i+1} ---\n")
-                self.result_text.insert(tk.END, chunk)
-                self.result_text.insert(tk.END, "\n\n")
+            try:
+                # Utwórz folder wyjściowy w tym samym katalogu co plik wejściowy
+                input_dir = os.path.dirname(self._selected_full_path)
+                input_filename_base = os.path.splitext(os.path.basename(self._selected_full_path))[0]
+                output_dir = os.path.join(input_dir, f"{input_filename_base}_chunks")
+                os.makedirs(output_dir, exist_ok=True)
+
+                # Wyświetl fragmenty w GUI i zapisz każdy do pliku
+                for i, chunk in enumerate(chunks):
+                    # Wyświetlanie w GUI
+                    self.result_text.insert(tk.END, f"--- Fragment {i+1} ---\n")
+                    self.result_text.insert(tk.END, chunk)
+                    self.result_text.insert(tk.END, "\n\n")
+
+                    # Zapisywanie do pliku
+                    chunk_filename = f"chunk_{i+1}.txt"
+                    chunk_filepath = os.path.join(output_dir, chunk_filename)
+                    with open(chunk_filepath, 'w', encoding='utf-8') as f:
+                        f.write(chunk)
+
+                # Dodaj informację o zapisaniu plików na końcu (poprawione przecinki)
+                self.result_text.insert(tk.END, f"\n--- ZAPISANO PLIKI ---\n")
+                self.result_text.insert(tk.END, f"Zapisano {len(chunks)} fragmentów jako pliki .txt w folderze:\n{output_dir}\n")
+                messagebox.showinfo("Zapisano pliki", f"Zapisano {len(chunks)} fragmentów w folderze:\n{output_dir}")
+
+            except Exception as save_e: # Dodano brakujący blok except
+                 messagebox.showerror("Błąd zapisu plików", f"Wystąpił błąd podczas zapisywania fragmentów do plików: {save_e}")
+                 # Poprawiony przecinek
+                 self.result_text.insert(tk.END, f"\n--- BŁĄD ZAPISU PLIKÓW ---\nWystąpił błąd: {save_e}\n")
+
         else:
-            self.result_text.insert(tk.END, "Nie znaleziono fragmentów do wyświetlenia.")
+            self.result_text.insert(tk.END, "Nie znaleziono fragmentów do wyświetlenia ani zapisania.")
 
         self.result_text.config(state=tk.DISABLED) # Ustaw z powrotem na tylko do odczytu
 
@@ -269,11 +417,14 @@ if __name__ == "__main__":
         # Dodajemy 'requests' do sprawdzanych bibliotek
         import requests
     except ImportError as e:
-         missing_libs = ["langchain_experimental", "pypdf", "python-docx", "requests", "langchain-core"]
+         # Dodajemy nltk do listy sprawdzanych bibliotek
+         missing_libs = ["langchain_experimental", "pypdf", "python-docx", "requests", "langchain-core", "nltk"]
          print(f"Brakująca biblioteka: {e}. Upewnij się, że zainstalowano: pip install {' '.join(missing_libs)}")
          # Można dodać `sys.exit()` jeśli chcesz zatrzymać wykonanie bez bibliotek
 
 
     root = tk.Tk()
     app = SemanticSplitterApp(root)
+    # Wywołaj raz na początku, aby ustawić poprawny stan początkowy
+    app.update_semantic_options_state()
     root.mainloop()
