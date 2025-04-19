@@ -108,7 +108,8 @@ def read_file_content(file_path):
         return None, f"Błąd podczas odczytu pliku: {e}"
 
 # Zmieniamy nazwę funkcji i dodajemy parametr 'strategy'
-def split_text(text, strategy="Semantyczny", semantic_method="percentile", threshold=None, base_url="http://localhost:1234/v1", model_name="nomic-embed-text"):
+# Dodajemy nowy parametr 'phrase' do funkcji split_text
+def split_text(text, strategy="Semantyczny", semantic_method="percentile", threshold=None, base_url="http://localhost:1234/v1", model_name="nomic-embed-text", phrase=None):
     """Dzieli tekst na fragmenty używając wybranej strategii."""
     if not text:
         return [], None
@@ -194,6 +195,55 @@ def split_text(text, strategy="Semantyczny", semantic_method="percentile", thres
             except Exception as process_e:
                  return None, f"Błąd podczas przetwarzania zdań po tokenizacji NLTK: {process_e}"
 
+        elif strategy == "Po konkretnej frazie":
+            # Logika dla podziału po konkretnej frazie
+            if not phrase: # Sprawdź czy fraza została podana
+                 return None, "Nie podano frazy do podziału."
+
+            chunks = []
+            current_pos = 0
+            while True:
+                # Znajdź kolejne wystąpienie frazy z uwzględnieniem wielkości liter
+                find_pos = text.find(phrase, current_pos)
+
+                if find_pos == -1:
+                    # Nie znaleziono więcej wystąpień frazy
+                    # Dodaj pozostały tekst jako ostatni fragment, jeśli nie jest pusty
+                    remaining_text = text[current_pos:].strip()
+                    if remaining_text:
+                         chunks.append(remaining_text)
+                    break
+                else:
+                    # Znaleziono frazę
+                    # Dodaj tekst od aktualnej pozycji do początku znalezionej frazy jako fragment
+                    chunk_before_phrase = text[current_pos:find_pos].strip()
+                    if chunk_before_phrase: # Dodaj tylko jeśli nie jest pusty
+                         chunks.append(chunk_before_phrase)
+
+                    # Teraz dodaj fragment zaczynający się od znalezionej frazy
+                    # Znajdź koniec tego fragmentu - będzie to początek następnej frazy
+                    next_find_pos = text.find(phrase, find_pos + len(phrase))
+
+                    if next_find_pos == -1:
+                         # To ostatnie wystąpienie frazy, dodaj tekst od frazy do końca dokumentu
+                         chunk_from_phrase = text[find_pos:].strip()
+                         if chunk_from_phrase: # Dodaj tylko jeśli nie jest pusty
+                              chunks.append(chunk_from_phrase)
+                         break # Zakończ pętlę
+
+                    else:
+                         # Znaleziono następną frazę, dodaj tekst od obecnej frazy do początku następnej frazy
+                         chunk_from_phrase = text[find_pos:next_find_pos].strip()
+                         if chunk_from_phrase: # Dodaj tylko jeśli nie jest pusty
+                              chunks.append(chunk_from_phrase)
+                         current_pos = next_find_pos # Przesuń pozycję do początku następnej frazy
+
+            # Usuń ewentualne puste fragmenty, które mogły powstać na początku lub końcu
+            chunks = [chunk for chunk in chunks if chunk]
+
+            return chunks, None
+
+
         else:
             return None, f"Nieznana strategia podziału: {strategy}"
 
@@ -245,21 +295,23 @@ class SemanticSplitterApp:
         # Nowa zmienna dla strategii podziału
         self.split_strategy = tk.StringVar(value="Semantyczny")
         self.semantic_method = tk.StringVar(value="percentile") # Zmieniona nazwa zmiennej dla metody semantycznej
+        self.semantic_threshold = tk.DoubleVar(value=95.0) # Nowa zmienna dla progu semantycznego
+        self.phrase_to_split = tk.StringVar() # Nowa zmienna dla frazy do podziału
 
         # --- Górna ramka (Wybór pliku) ---
-        top_frame = tk.Frame(root, padx=10, pady=10)
-        top_frame.pack(fill=tk.X)
+        top_frame = ttk.LabelFrame(root, text="Wybór Pliku Wejściowego")
+        top_frame.pack(fill=tk.X, padx=10, pady=5)
 
         # Wybór pliku
         tk.Button(top_frame, text="Wybierz plik (.txt, .pdf, .docx)", command=self.select_file).pack(side=tk.LEFT, padx=5)
         tk.Label(top_frame, textvariable=self.file_path, relief=tk.SUNKEN, width=60).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5) # Zwiększono szerokość
 
         # --- Ramka Strategii Podziału ---
-        strategy_frame = tk.Frame(root, padx=10, pady=5)
-        strategy_frame.pack(fill=tk.X)
+        strategy_frame = ttk.LabelFrame(root, text="Strategia Podziału")
+        strategy_frame.pack(fill=tk.X, padx=10, pady=5)
 
         tk.Label(strategy_frame, text="Strategia podziału:").pack(side=tk.LEFT, padx=5)
-        strategies = ["Semantyczny", "Na akapity", "Na zdania"]
+        strategies = ["Semantyczny", "Na akapity", "Na zdania", "Po konkretnej frazie"] # Dodano nową strategię
         # Usuwamy 'command' i dodajemy powiązanie zdarzenia poniżej
         strategy_menu = ttk.Combobox(strategy_frame, textvariable=self.split_strategy, values=strategies, state="readonly", width=15)
         strategy_menu.pack(side=tk.LEFT, padx=5)
@@ -267,8 +319,8 @@ class SemanticSplitterApp:
         strategy_menu.bind("<<ComboboxSelected>>", self.update_semantic_options_state)
 
         # --- Ramka Metody Semantycznej (warunkowo aktywna) ---
-        self.semantic_options_frame = tk.Frame(root, padx=10, pady=5)
-        self.semantic_options_frame.pack(fill=tk.X)
+        self.semantic_options_frame = ttk.LabelFrame(root, text="Opcje Semantyczne")
+        self.semantic_options_frame.pack(fill=tk.X, padx=10, pady=5)
 
         self.semantic_method_label = tk.Label(self.semantic_options_frame, text="Metoda semantyczna:")
         self.semantic_method_label.pack(side=tk.LEFT, padx=5)
@@ -277,16 +329,28 @@ class SemanticSplitterApp:
         self.semantic_method_menu = ttk.Combobox(self.semantic_options_frame, textvariable=self.semantic_method, values=semantic_methods, state="readonly", width=20)
         self.semantic_method_menu.pack(side=tk.LEFT, padx=5)
 
+        # Etykieta i pole wprowadzania dla progu semantycznego
+        self.semantic_threshold_label = tk.Label(self.semantic_options_frame, text="Próg (Threshold):")
+        self.semantic_threshold_label.pack(side=tk.LEFT, padx=5)
+        self.semantic_threshold_entry = ttk.Entry(self.semantic_options_frame, textvariable=self.semantic_threshold, width=10)
+        self.semantic_threshold_entry.pack(side=tk.LEFT, padx=5)
+
+        # Etykieta i pole wprowadzania dla frazy do podziału
+        self.phrase_label = tk.Label(self.semantic_options_frame, text="Fraza do podziału:")
+        self.phrase_label.pack(side=tk.LEFT, padx=5)
+        self.phrase_entry = ttk.Entry(self.semantic_options_frame, textvariable=self.phrase_to_split, width=20)
+        self.phrase_entry.pack(side=tk.LEFT, padx=5)
+
         # --- Ramka Przycisku ---
-        button_frame = tk.Frame(root, padx=10, pady=10)
-        button_frame.pack(fill=tk.X)
+        button_frame = ttk.LabelFrame(root, text="Akcje")
+        button_frame.pack(fill=tk.X, padx=10, pady=5)
         # Przycisk uruchomienia
         tk.Button(button_frame, text="Podziel tekst", command=self.run_split).pack(side=tk.LEFT, padx=5)
         # Usunięto zduplikowany i błędny przycisk odnoszący się do 'options_frame'
 
         # --- Dolna ramka (Wyniki) ---
-        result_frame = tk.Frame(root, padx=10, pady=10)
-        result_frame.pack(fill=tk.BOTH, expand=True)
+        result_frame = ttk.LabelFrame(root, text="Wyniki Podziału")
+        result_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         tk.Label(result_frame, text="Wynikowe fragmenty tekstu:").pack(anchor=tk.W)
         self.result_text = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, width=80, height=25)
@@ -294,13 +358,32 @@ class SemanticSplitterApp:
         self.result_text.config(state=tk.DISABLED) # Tylko do odczytu na początku
 
     def update_semantic_options_state(self, event=None):
-        """Włącza/wyłącza opcje metody semantycznej w zależności od wybranej strategii."""
-        if self.split_strategy.get() == "Semantyczny":
+        """Włącza/wyłącza opcje semantyczne i pole frazy w zależności od wybranej strategii."""
+        selected_strategy = self.split_strategy.get()
+
+        # Zarządzaj opcjami semantycznymi
+        if selected_strategy == "Semantyczny":
             self.semantic_method_label.config(state=tk.NORMAL)
             self.semantic_method_menu.config(state="readonly")
+            self.semantic_threshold_label.config(state=tk.NORMAL)
+            self.semantic_threshold_entry.config(state=tk.NORMAL)
         else:
             self.semantic_method_label.config(state=tk.DISABLED)
             self.semantic_method_menu.config(state=tk.DISABLED)
+            self.semantic_threshold_label.config(state=tk.DISABLED)
+            self.semantic_threshold_entry.config(state=tk.DISABLED)
+
+        # Zarządzaj polem frazy (zakładając, że jest w tej samej ramce lub łatwo dostępne)
+        # Jeśli pole frazy jest w innej ramce, trzeba będzie ją też włączyć/wyłączyć
+        # Na potrzeby tej zmiany dodamy pole frazy do semantic_options_frame
+        if hasattr(self, 'phrase_label'): # Sprawdź, czy pole frazy już istnieje
+             if selected_strategy == "Po konkretnej frazie":
+                  self.phrase_label.config(state=tk.NORMAL)
+                  self.phrase_entry.config(state=tk.NORMAL)
+             else:
+                  self.phrase_label.config(state=tk.DISABLED)
+                  self.phrase_entry.config(state=tk.DISABLED)
+
 
     def select_file(self):
         """Otwiera okno dialogowe do wyboru pliku."""
@@ -326,6 +409,7 @@ class SemanticSplitterApp:
 
         strategy = self.split_strategy.get() # Pobierz wybraną strategię
         semantic_method = self.semantic_method.get() # Pobierz metodę semantyczną (jeśli potrzebna)
+        phrase = self.phrase_to_split.get() # Pobierz frazę do podziału
 
         # Wyczyść poprzednie wyniki
         self.result_text.config(state=tk.NORMAL)
@@ -352,12 +436,52 @@ class SemanticSplitterApp:
         # Podajemy też model_name - domyślnie "nomic-embed-text"
         # Wywołujemy funkcję z poprawnymi parametrami dla naszej nowej implementacji
         # Wywołaj nową funkcję dzielenia tekstu
+        # Pobierz wartość progu semantycznego, jeśli strategia to "Semantyczny"
+        threshold_value = None
+        if strategy == "Semantyczny":
+            try:
+                threshold_value = self.semantic_threshold.get()
+                # Sprawdź, czy wartość jest sensowna (opcjonalnie, można dodać walidację)
+                if not isinstance(threshold_value, (int, float)):
+                     threshold_value = None # Użyj wartości domyślnej z funkcji split_text
+
+            except tk.TclError:
+                # Wystąpił błąd konwersji (np. użytkownik wpisał tekst)
+                messagebox.showwarning("Błąd wartości progu", "Wprowadzona wartość progu semantycznego jest nieprawidłowa. Użyję wartości domyślnej dla wybranej metody.")
+                threshold_value = None # Użyj wartości domyślnej z funkcji split_text
+
+        # Pobierz wartość progu semantycznego, jeśli strategia to "Semantyczny"
+        threshold_value = None
+        if strategy == "Semantyczny":
+            try:
+                threshold_value = self.semantic_threshold.get()
+                # Sprawdź, czy wartość jest sensowna (opcjonalnie, można dodać walidację)
+                # Jeśli wartość jest pusta lub nie jest liczbą, get() może rzucić TclError
+                if not isinstance(threshold_value, (int, float)):
+                     threshold_value = None # Użyj wartości domyślnej z funkcji split_text
+
+            except tk.TclError:
+                # Wystąpił błąd konwersji (np. użytkownik wpisał tekst)
+                messagebox.showwarning("Błąd wartości progu", "Wprowadzona wartość progu semantycznego jest nieprawidłowa. Użyję wartości domyślnej dla wybranej metody.")
+                threshold_value = None # Użyj wartości domyślnej z funkcji split_text
+
+        # Sprawdź, czy fraza jest podana, jeśli strategia to "Po konkretnej frazie"
+        if strategy == "Po konkretnej frazie" and not phrase:
+             messagebox.showerror("Błąd", "Proszę podać frazę do podziału.")
+             self.result_text.delete(1.0, tk.END)
+             self.result_text.config(state=tk.DISABLED)
+             return
+
+
+        # Wywołaj funkcję dzielenia tekstu z odpowiednimi parametrami
         chunks, error = split_text(
             content,
             strategy=strategy,
-            semantic_method=semantic_method, # Przekaż metodę semantyczną
+            semantic_method=semantic_method, # Przekaż metodę semantyczną (używana tylko w strategii semantycznej)
+            threshold=threshold_value, # Przekaż wartość progu (używana tylko w strategii semantycznej)
             base_url="http://localhost:1234/v1",
-            model_name="nomic-embed-text"
+            model_name="nomic-embed-text", # Używane tylko w strategii semantycznej
+            phrase=phrase # Przekaż frazę (używana tylko w strategii "Po konkretnej frazie")
         )
         if error:
             # Poprawiony komunikat błędu, dodajemy informację o strategii
